@@ -1,0 +1,34 @@
+[project]
+name = "rag-eval-harness"
+version = "0.1.0"
+description = "A hand-built RAG pipeline with a real evaluation harness (tutorial scaffold)"
+requires-python = ">=3.11"
+
+dependencies = [
+    # HTTP client for the OpenAI-compatible llama.cpp server (chat + embeddings).
+    "httpx>=0.27",
+    # Vector math. At this corpus size numpy alone would be a complete vector store;
+    # see src/index_dense.py for why we build both a numpy and a FAISS path.
+    "numpy>=1.26",
+    # Config files.
+    "pyyaml>=6.0",
+    # Sparse / lexical retrieval (Phase 2).
+    "rank-bm25>=0.2.2",
+    # Exact inner-product vector index (Phase 2).
+    # If this fails to install on your Python version, it is NOT fatal: index_dense.py
+    # imports faiss lazily and falls back to the numpy path with a warning.
+    "faiss-cpu>=1.8",
+]
+
+# Phase 7 (API + UI) adds: fastapi, uvicorn.
+# Install later with:  uv add fastapi uvicorn
+[project.optional-dependencies]
+api = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+]
+
+[tool.uv]
+# This repo is a collection of runnable scripts (`python -m src.ingest`), not a
+# distributable library, so uv should not try to build/install it as a package.
+package = false

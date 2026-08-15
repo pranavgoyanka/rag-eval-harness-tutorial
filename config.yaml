@@ -1,0 +1,172 @@
+# =============================================================================
+# RAG + Eval Harness — configuration
+#
+# Every knob the pipeline reads lives here. src/config.py parses this into
+# dataclasses so you get attribute access and typos fail loudly.
+#
+# Sections are labeled with the phase that first uses them, so you can ignore
+# anything below the phase you're currently on.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# server — Phase 0
+#
+# We talk to a llama.cpp server (behind a llama-swap router) that speaks the
+# OpenAI-compatible API: /v1/models, /v1/chat/completions, /v1/embeddings.
+# -----------------------------------------------------------------------------
+server:
+  # IMPORTANT: from inside a container, "localhost" is the container itself, not
+  # your host machine. The llama.cpp server runs on the HOST, so we address it
+  # through the Docker host gateway.
+  #
+  # Override at runtime without editing this file:  export RAG_BASE_URL=...
+  base_url: "http://host.docker.internal:8101/v1"
+
+  # llama.cpp ignores the API key, but the OpenAI-compatible client sends one
+  # anyway. Any non-empty string works.
+  api_key: "not-needed"
+
+  # Seconds. Generation on a 27B model can be slow on first token; be generous.
+  timeout: 300
+
+# -----------------------------------------------------------------------------
+# models — Phase 0
+# -----------------------------------------------------------------------------
+models:
+  # The chat model, as reported by GET /v1/models.
+  chat: "qwen3.8-27b"
+
+  # The embedding model. THIS MUST BE ADDED TO YOUR llama-swap CONFIG FIRST —
+  # a plain llama-server only exposes /v1/embeddings when started with the
+  # --embeddings flag. Run `python -m src.config --check`; if embeddings are
+  # missing it prints the exact config snippet you need.
+  embedding: "nomic-embed-text"
+
+  # Embedding dimensionality. nomic-embed-text-v1.5 = 768.
+  # config.py --check verifies the server agrees with this number; a mismatch
+  # here silently corrupts your index, so we assert on it rather than trust it.
+  embedding_dim: 768
+
+# -----------------------------------------------------------------------------
+# chunking — Phase 1
+#
+# Sizing note: this corpus is ~2,900 tokens across 8 documents. The commonly
+# quoted "300-500 token chunks" advice would give roughly ONE chunk per file,
+# which makes retrieval trivially perfect and your eval numbers meaningless.
+# We chunk by Markdown heading section instead, which lands around 40-250
+# tokens and actually forces the retriever to discriminate.
+# -----------------------------------------------------------------------------
+chunking:
+  corpus_dir: "corpus"
+
+  # Split on headings at these levels. `#` is the document title, `##` are the
+  # real section boundaries in this corpus.
+  heading_levels: [1, 2, 3]
+
+  # A section shorter than this gets merged forward into its neighbor.
+  # Rationale: a 12-token chunk like "## Charging" + one sentence carries almost
+  # no signal for an embedding model, and pollutes top-k with near-empty hits.
+  min_tokens: 40
+
+  # Hard ceiling. A section longer than this would ideally be split further —
+  # but see the TODO in ingest.py: on this corpus nothing exceeds it, so the
+  # sub-splitting path is deliberately left unimplemented (YAGNI).
+  max_tokens: 250
+
+  # Prepend the heading breadcrumb ("product-nb1.md > General specifications")
+  # to each chunk body. This is the single highest-leverage trick on this
+  # corpus — see the long comment in ingest.py::split_by_heading.
+  prepend_heading_path: true
+
+# -----------------------------------------------------------------------------
+# paths — Phase 1+
+# Everything here is generated output and is gitignored.
+# -----------------------------------------------------------------------------
+paths:
+  artifacts_dir: "artifacts"
+  chunks: "artifacts/chunks.jsonl"        # Phase 1
+  dense_vectors: "artifacts/dense.npy"    # Phase 2
+  dense_meta: "artifacts/dense_meta.json" # Phase 2
+  faiss_index: "artifacts/dense.faiss"    # Phase 2
+  bm25_index: "artifacts/bm25.pkl"        # Phase 2
+  embed_cache: "artifacts/embed_cache"    # Phase 2
+
+# -----------------------------------------------------------------------------
+# embedding — Phase 2
+# -----------------------------------------------------------------------------
+embedding:
+  # How many texts to send per /v1/embeddings request. The backing llama-server
+  # runs with --parallel 1, so requests are serialized anyway; batching just
+  # cuts HTTP round-trips.
+  batch_size: 16
+
+  # ASYMMETRIC EMBEDDING PREFIXES — read src/embed.py before changing these.
+  # Some models (nomic, BGE, E5) are trained with different prefixes for the
+  # query side and the document side. Getting them backwards does NOT error;
+  # it just quietly costs you recall. If you switch to a symmetric model
+  # (e.g. all-MiniLM-L6-v2), set both to "".
+  query_prefix: "search_query: "
+  passage_prefix: "search_document: "
+
+# -----------------------------------------------------------------------------
+# retrieval — Phase 2 / 3
+# -----------------------------------------------------------------------------
+retrieval:
+  # Final number of chunks handed to the generator.
+  top_k: 8
+
+  # Each retrieval arm (dense, BM25) fetches top_k * overfetch candidates before
+  # fusion. You over-fetch because a chunk ranked #15 by dense and #2 by BM25
+  # should still win after fusion — but only if it was in both candidate pools.
+  overfetch: 3
+
+  # RRF damping constant. score(d) = sum over lists of 1 / (rrf_k + rank).
+  # 60 is the value from the original Cormack et al. 2009 paper; it is large
+  # enough that rank 1 and rank 2 score similarly (1/61 vs 1/62), so a single
+  # list can't dominate the fusion.
+  rrf_k: 60
+
+  # Phase 4 abstention gate: if the best fused score is below this, we refuse
+  # before spending a generation call. You will CALIBRATE this, not guess it —
+  # see the TODO in pipeline.py::should_abstain.
+  min_score: 0.0
+
+# -----------------------------------------------------------------------------
+# generation — Phase 4
+# -----------------------------------------------------------------------------
+generation:
+  # 0 = greedy decoding. Non-negotiable for an eval harness: you cannot measure
+  # a change to your retriever if the generator's output moves on its own.
+  temperature: 0.0
+  max_tokens: 512
+
+  # Token budget for the retrieved context block. Well under the model's real
+  # context window, because a bigger budget is not free: it costs latency and
+  # invites the "lost in the middle" failure (see src/context.py).
+  context_token_budget: 2000
+
+  # qwen3.8-27b is a THINKING model. Left on, it emits a long reasoning trace
+  # into `reasoning_content` before answering, which wrecks your latency numbers
+  # and complicates citation parsing. Set false unless you want to study it.
+  enable_thinking: false
+
+# -----------------------------------------------------------------------------
+# verification — Phase 5 (NOT USED YET)
+#
+# These fields are parsed by config.py today but nothing reads them until you
+# build src/self_correct.py. They are here so the config shape stops changing
+# under you. Do not tune them by hand — Phase 5 ships scripts/calibrate.py,
+# which measures the right values from real answers.
+# -----------------------------------------------------------------------------
+verification:
+  enabled: false
+  sim_threshold: 0.55    # cosine(sentence, best supporting chunk)
+  jaccard_threshold: 0.30 # token overlap fallback, catches numbers/IDs
+  max_iterations: 2
+
+# -----------------------------------------------------------------------------
+# eval — Phase 6 (NOT USED YET)
+# -----------------------------------------------------------------------------
+eval:
+  golden_set: "eval/golden_set.json"
+  output: "metrics.json"

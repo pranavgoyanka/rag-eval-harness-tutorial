@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# uv
+.uv/
+
+# Build artifacts: indexes, chunks, embedding cache.
+# These are regenerable from `corpus/` — never commit them.
+artifacts/
+
+# Eval output (Phase 6)
+metrics.json
