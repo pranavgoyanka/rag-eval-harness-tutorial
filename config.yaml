@@ -20,7 +20,7 @@ server:
   # through the Docker host gateway.
   #
   # Override at runtime without editing this file:  export RAG_BASE_URL=...
-  base_url: "http://host.docker.internal:8101/v1"
+  base_url: "http://0.0.0.0:8101/v1"
 
   # llama.cpp ignores the API key, but the OpenAI-compatible client sends one
   # anyway. Any non-empty string works.
@@ -40,7 +40,7 @@ models:
   # a plain llama-server only exposes /v1/embeddings when started with the
   # --embeddings flag. Run `python -m src.config --check`; if embeddings are
   # missing it prints the exact config snippet you need.
-  embedding: "nomic-embed-text"
+  embedding: "embed"
 
   # Embedding dimensionality. nomic-embed-text-v1.5 = 768.
   # config.py --check verifies the server agrees with this number; a mismatch

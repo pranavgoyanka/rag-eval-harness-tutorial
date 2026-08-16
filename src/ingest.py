@@ -45,6 +45,7 @@ import re
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from pprint import pprint
 
 from src.config import ROOT, Config, load_config
 
@@ -216,7 +217,77 @@ def split_by_heading(doc_name: str, md_text: str, heading_levels: list[int]) -> 
     Returns: list[Section] in document order.
     """
     # TODO(Phase 1): implement per the recipe above.
-    raise NotImplementedError("Phase 1: split_by_heading")
+    
+    # print(md_text.splitlines())
+    
+    inside_fence = False
+    breadcrumb = [] 
+    sections: list[Section] = []
+    
+    for line in md_text.splitlines():
+        if line.startswith("```") or line.startswith("~~~"):
+            inside_fence = not inside_fence
+            continue
+        
+        # 3. Outside a fence, detect a heading with a regex like ^(#{1,6})\\s+(.*)$.
+        #          `len(group(1))` is the level, `group(2).strip()` is the title.
+        
+        if not inside_fence: #outside fence
+            level = -1
+            title = line
+            
+            if re.match(r"^(#{1,6})\s+(.*)$", line):    
+                groups = line.split(" ", maxsplit=1)
+                level = len(groups[0])
+                title = groups[1].strip()
+                # print("found a heading!", level, title)
+            
+            # 4. If the level is in `heading_levels`, START A NEW SECTION. Otherwise
+            #     treat the line as ordinary body text.
+
+            if heading_levels.count(level):
+                # start section
+                # level won't be -1
+                
+                L_MINUS_1 = level - 1
+                while len(breadcrumb) > L_MINUS_1:
+                    breadcrumb.pop()
+                
+                breadcrumb.append(title)
+                
+                section = Section(
+                    doc=doc_name,
+                    heading_path=breadcrumb.copy(),
+                )
+                sections.append(section)
+                sections[-1].lines.append(title)
+            else:
+                # treat as normal
+                # level will be -1
+                # title is the line itself
+                sections[-1].lines.append(title)
+          
+
+        # 5. Maintain the breadcrumb as a stack. On a heading of level L:
+        #         truncate the stack to L-1 entries, then append this title.
+        #     So `##` under `#` yields a 2-element path; a second `##` REPLACES the
+        #     first one rather than nesting under it.
+
+        # 6. Remember the convention: the heading line goes into the new section's
+        #     `lines`, not thrown away.
+
+        # 7. Handle the preamble — text before the first heading (this corpus has
+        #     none, since every file opens with `#`, but don't crash on it). Give it
+        #     an empty heading_path.
+
+    # 8. Drop sections whose body is empty after stripping.
+    
+    for section in sections:
+        if (len(section.lines)) == 1:
+            sections.remove(section)    
+    # pprint(sections)
+    return sections
+    # raise NotImplementedError("Phase 1: split_by_heading")
 
 
 # =============================================================================
@@ -270,8 +341,31 @@ def merge_small_sections(
 
     Returns: list[Section], length <= len(sections).
     """
-    # TODO(Phase 1): implement per the recipe above.
-    raise NotImplementedError("Phase 1: merge_small_sections")
+    if len(sections) < 1:
+        return sections
+
+    merged: list[Section] = []
+    i = 0
+
+    while i < len(sections):
+        current = sections[i]
+
+        while current.token_count < min_tokens and i + 1 < len(sections):
+            nxt = sections[i + 1]
+            candidate = Section(
+                doc=current.doc,
+                heading_path=current.heading_path.copy(),
+                lines=current.lines + nxt.lines,
+            )
+            if candidate.token_count > max_tokens:
+                break
+            current = candidate
+            i += 1
+
+        merged.append(current)
+        i += 1
+
+    return merged
 
 
 # =============================================================================
@@ -303,8 +397,7 @@ def make_chunk_id(doc_name: str, ordinal: int) -> str:
       Return f"{doc_name}::{ordinal:03d}". That's it — one line.
       (It's a stub because the *reasoning* above is the lesson, not the code.)
     """
-    # TODO(Phase 1): implement.
-    raise NotImplementedError("Phase 1: make_chunk_id")
+    return f"{doc_name}::{ordinal:03d}"
 
 
 # =============================================================================
