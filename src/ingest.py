@@ -46,6 +46,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from pprint import pprint
+from copy import copy
 
 from src.config import ROOT, Config, load_config
 
@@ -260,7 +261,7 @@ def split_by_heading(doc_name: str, md_text: str, heading_levels: list[int]) -> 
                     heading_path=breadcrumb.copy(),
                 )
                 sections.append(section)
-                sections[-1].lines.append(title)
+                sections[-1].lines.append(line)
             else:
                 # treat as normal
                 # level will be -1
@@ -341,31 +342,103 @@ def merge_small_sections(
 
     Returns: list[Section], length <= len(sections).
     """
+    # TODO(Phase 1): implement per the recipe above.
+    
+    if len(sections) < 1:
+        return sections
+    
+    def getSectionTokens(section: Section):
+        lines = section.lines
+        text = " ".join(section.lines)
+        tokens = count_tokens(text)
+        return tokens
+
+                    # r,l
+    # [S1 S1.5 S2 S3 S4]
+        # [10 2  3  4  6]
+        # min = 5
+        # max = 10
+    
+    mergedSections = []
+    
+    #  * If current.token_count >= min_tokens, emit it and move on.
+    #     #  * Otherwise try to absorb the NEXT section into it, but only if
+    #     #    combined tokens <= max_tokens.
+    
+    # currentCount = getSectionTokens(rSections[l]) # 6
+    # min = 5, max = 11
+    # [6, 4, 3, 10, 2]
+    # [6, 7, 10, 2]
+    #     l ,r
+    # l 6
+    # l 4
+    # l 7
+    # l 9
+    # l -> 0 -> 10 
+    
+    def mergeTwoSections(a, b):
+        temp: Section = copy(a)
+        temp.lines.extend(copy(b).lines)
+        return temp
+    
+    l = 0
+    r = 1
+    limit = len(sections)
+    
+    currentSection: Section = copy(sections[l])
+    
+    # while (r < limit):
+    #     if (getSectionTokens(currentSection) >= min_tokens):
+    #         mergedSections.append(currentSection)
+    #         l = r
+    #         r += 1
+    #         currentSection = copy(sections[l])
+    #     elif getSectionTokens(currentSection) + getSectionTokens(sections[r]) > max_tokens:
+    #         mergedSections.append(currentSection)
+    #         currentSection = copy(sections[r])
+    #         l = r
+    #         r += 1
+    #     else:
+    #         currentSection = mergeTwoSections(currentSection, sections[r])
+    #         r += 1
+    # mergedSections.append(currentSection)
+    # # pprint(sections)
+    # pprint(mergedSections)
+    # return mergedSections
     if len(sections) < 1:
         return sections
 
-    merged: list[Section] = []
-    i = 0
+    def fresh(section: Section) -> Section:
+        s = copy(section)
+        s.lines = list(section.lines)   # break aliasing with the input
+        return s
 
-    while i < len(sections):
-        current = sections[i]
+    counts = [count_tokens(" ".join(s.lines)) for s in sections]
 
-        while current.token_count < min_tokens and i + 1 < len(sections):
-            nxt = sections[i + 1]
-            candidate = Section(
-                doc=current.doc,
-                heading_path=current.heading_path.copy(),
-                lines=current.lines + nxt.lines,
-            )
-            if candidate.token_count > max_tokens:
-                break
-            current = candidate
-            i += 1
+    merged_sections: list[Section] = []
+    current = fresh(sections[0])
+    current_tokens = counts[0]
 
-        merged.append(current)
-        i += 1
+    r = 1
+    while r < len(sections):            # was: r < limit  <- dropped last section
+        if current_tokens >= min_tokens:
+            merged_sections.append(current)
+            current = fresh(sections[r])
+            current_tokens = counts[r]
+        elif current_tokens + counts[r] > max_tokens:
+            merged_sections.append(current)
+            current = fresh(sections[r])
+            current_tokens = counts[r]
+        else:
+            current.lines.extend(sections[r].lines)
+            current_tokens += counts[r]
+        r += 1
 
-    return merged
+    merged_sections.append(current)     # last section may be under min; emit anyway
+    # pprint(merged_sections)
+    return merged_sections           
+
+    # raise NotImplementedError("Phase 1: merge_small_sections")
 
 
 # =============================================================================
@@ -397,7 +470,9 @@ def make_chunk_id(doc_name: str, ordinal: int) -> str:
       Return f"{doc_name}::{ordinal:03d}". That's it — one line.
       (It's a stub because the *reasoning* above is the lesson, not the code.)
     """
+    # TODO(Phase 1): implement.
     return f"{doc_name}::{ordinal:03d}"
+    # raise NotImplementedError("Phase 1: make_chunk_id")
 
 
 # =============================================================================

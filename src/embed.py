@@ -85,8 +85,29 @@ def l2_normalize(mat: np.ndarray) -> np.ndarray:
 
     Returns: array of the same shape as the input, each row of length 1.
     """
-    # TODO(Phase 2): implement per the recipe above.
-    raise NotImplementedError("Phase 2: l2_normalize")
+    # TODO(Phase 2): implement per the recipe above.    
+
+    # fix dimensions
+    fixedMat: np.ndarray
+    if mat.ndim == 1:
+        fixedMat = mat.reshape(1, -1)
+    else:
+        fixedMat = mat
+        
+    norms = np.linalg.norm(fixedMat, axis=1, keepdims=True)
+    
+    fixedNorms = np.where(norms == 0 | np.isnan(norms), 1.0, norms)
+    
+    res = fixedMat / fixedNorms
+    
+    res_32 = res.astype('float32')
+    
+    # print(res, res_32)
+    
+    return res_32
+    
+    
+    # raise NotImplementedError("Phase 2: l2_normalize")
 
 
 # =============================================================================
