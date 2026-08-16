@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAG + Eval Harness</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b35;
+    --fg: #e6e8ee; --dim: #949aa8; --accent: #6ea8fe;
+    --ok: #56d364; --warn: #e3b341; --bad: #f85149;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.55 system-ui, -apple-system, sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--dim); font-size: 13px; margin-bottom: 24px; }
+  form { display: flex; gap: 8px; margin-bottom: 12px; }
+  input[type=text] {
+    flex: 1; padding: 11px 13px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--fg);
+    font-size: 15px;
+  }
+  input[type=text]:focus { outline: none; border-color: var(--accent); }
+  button {
+    padding: 11px 18px; border-radius: 8px; border: 0;
+    background: var(--accent); color: #0b0d12; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  .opts { display: flex; gap: 16px; align-items: center;
+          color: var(--dim); font-size: 13px; margin-bottom: 22px; }
+  .opts select {
+    background: var(--panel); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 18px; margin-bottom: 16px;
+  }
+  .answer { font-size: 16px; white-space: pre-wrap; }
+  .answer.abstained { color: var(--warn); font-style: italic; }
+  .stats { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .stat {
+    font: 12px var(--mono); padding: 4px 9px; border-radius: 999px;
+    background: #0d1017; border: 1px solid var(--line); color: var(--dim);
+  }
+  .stat b { color: var(--fg); font-weight: 600; }
+  .stat.ok b { color: var(--ok); }
+  .stat.warn b { color: var(--warn); }
+  .stat.bad b { color: var(--bad); }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
+       color: var(--dim); margin: 0 0 10px; }
+  .src { border-top: 1px solid var(--line); padding: 12px 0; }
+  .src:first-of-type { border-top: 0; }
+  .src-head { display: flex; gap: 8px; align-items: baseline;
+              flex-wrap: wrap; margin-bottom: 6px; }
+  .chip {
+    font: 11px var(--mono); padding: 2px 7px; border-radius: 5px;
+    background: #0d1017; border: 1px solid var(--line); color: var(--dim);
+  }
+  .chip.cited { background: #143d2b; border-color: #1f6f4a; color: var(--ok); }
+  .path { color: var(--dim); font-size: 13px; }
+  .src-body {
+    font: 12px/1.5 var(--mono); color: var(--dim); white-space: pre-wrap;
+    max-height: 8.5em; overflow: auto; margin: 0;
+  }
+  .err { color: var(--bad); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>RAG + Eval Harness</h1>
+  <div class="sub">Hybrid retrieval over the Nimbus Robotics corpus. Answers are grounded in retrieved chunks or refused.</div>
+
+  <form id="f">
+    <input type="text" id="q" placeholder="Ask something about the corpus…" autocomplete="off" autofocus>
+    <button id="go" type="submit">Ask</button>
+  </form>
+
+  <div class="opts">
+    <label>retrieval
+      <select id="mode">
+        <option value="hybrid">hybrid (RRF)</option>
+        <option value="dense">dense only</option>
+        <option value="none">no retrieval (full corpus)</option>
+      </select>
+    </label>
+    <label><input type="checkbox" id="verify"> run verification loop</label>
+  </div>
+
+  <div id="out"></div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+$('f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const question = $('q').value.trim();
+  if (!question) return;
+
+  $('go').disabled = true;
+  $('out').innerHTML = '<div class="card"><span class="path">thinking…</span></div>';
+  const t0 = performance.now();
+
+  try {
+    const r = await fetch('/query', {
+      method: 'POST',
+      headers: {'content-type': 'application/json'},
+      body: JSON.stringify({
+        question,
+        mode: $('mode').value,
+        verify: $('verify').checked ? true : null,
+      }),
+    });
+    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    render(await r.json(), (performance.now() - t0) / 1000);
+  } catch (err) {
+    $('out').innerHTML = `<div class="card err">${esc(String(err))}</div>`;
+  } finally {
+    $('go').disabled = false;
+  }
+});
+
+function render(d, wall) {
+  const stats = [];
+  const t = d.timings || {};
+  for (const k of ['retrieve', 'context', 'generate', 'verify', 'total']) {
+    if (t[k] != null) stats.push(`<span class="stat">${k} <b>${t[k].toFixed(2)}s</b></span>`);
+  }
+  stats.push(`<span class="stat">round trip <b>${wall.toFixed(2)}s</b></span>`);
+  stats.push(`<span class="stat">tokens <b>${d.prompt_tokens} / ${d.completion_tokens}</b></span>`);
+
+  if (d.faithfulness != null) {
+    const cls = d.faithfulness >= 0.9 ? 'ok' : d.faithfulness >= 0.7 ? 'warn' : 'bad';
+    stats.push(`<span class="stat ${cls}">faithfulness <b>${(d.faithfulness * 100).toFixed(0)}%</b></span>`);
+    stats.push(`<span class="stat">rewrites <b>${d.iterations}</b></span>`);
+  }
+  if (d.invalid_citations.length) {
+    stats.push(`<span class="stat bad">bad citations <b>${d.invalid_citations.join(', ')}</b></span>`);
+  }
+
+  const srcs = d.sources.map((s, i) => `
+    <div class="src">
+      <div class="src-head">
+        <span class="chip ${s.cited ? 'cited' : ''}">[S${i + 1}]${s.cited ? ' cited' : ''}</span>
+        <span class="chip">rrf ${s.rrf_score.toFixed(4)}</span>
+        <span class="chip">dense ${s.dense_rank ?? '—'}</span>
+        <span class="chip">bm25 ${s.sparse_rank ?? '—'}</span>
+        <span class="path">${esc(s.source)}${s.heading_path.length ? ' › ' + esc(s.heading_path.join(' › ')) : ''}</span>
+      </div>
+      <pre class="src-body">${esc(s.text)}</pre>
+    </div>`).join('');
+
+  $('out').innerHTML = `
+    <div class="card">
+      <div class="answer ${d.abstained ? 'abstained' : ''}">${esc(d.answer)}</div>
+      <div class="stats">${stats.join('')}</div>
+    </div>
+    <div class="card">
+      <h2>Retrieved context — ${d.sources.length} chunks, ${d.citations.length} cited</h2>
+      ${srcs || '<span class="path">nothing retrieved</span>'}
+    </div>`;
+}
+</script>
+</body>
+</html>

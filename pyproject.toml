@@ -18,12 +18,7 @@ dependencies = [
     # If this fails to install on your Python version, it is NOT fatal: index_dense.py
     # imports faiss lazily and falls back to the numpy path with a warning.
     "faiss-cpu>=1.8",
-]
-
-# Phase 7 (API + UI) adds: fastapi, uvicorn.
-# Install later with:  uv add fastapi uvicorn
-[project.optional-dependencies]
-api = [
+    # Phase 7: HTTP API + browser UI.
     "fastapi>=0.115",
     "uvicorn>=0.30",
 ]

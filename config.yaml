@@ -151,21 +151,27 @@ generation:
   enable_thinking: false
 
 # -----------------------------------------------------------------------------
-# verification — Phase 5 (NOT USED YET)
+# verification — Phase 5
 #
-# These fields are parsed by config.py today but nothing reads them until you
-# build src/self_correct.py. They are here so the config shape stops changing
-# under you. Do not tune them by hand — Phase 5 ships scripts/calibrate.py,
-# which measures the right values from real answers.
+# Read by src/self_correct.py. `enabled: false` keeps it off by default so
+# Phase 4 latency stays honest; override per call with `--verify` on the
+# pipeline CLI, or per pipeline in the Phase 6 ablation.
+#
+# THE TWO THRESHOLDS BELOW ARE PLACEHOLDERS, NOT RECOMMENDATIONS.
+# Every faithfulness number you report depends on them. Measure them:
+#     uv run python scripts/calibrate.py
+# It prints the score distributions for grounded vs ungrounded sentences and
+# suggests a cutoff. See the long note in self_correct.py::jaccard about why
+# the Jaccard value in particular is probably far too high as written.
 # -----------------------------------------------------------------------------
 verification:
   enabled: false
-  sim_threshold: 0.55    # cosine(sentence, best supporting chunk)
+  sim_threshold: 0.55     # cosine(sentence, best supporting chunk)
   jaccard_threshold: 0.30 # token overlap fallback, catches numbers/IDs
-  max_iterations: 2
+  max_iterations: 2       # hard cap — the loop must always terminate
 
 # -----------------------------------------------------------------------------
-# eval — Phase 6 (NOT USED YET)
+# eval — Phase 6
 # -----------------------------------------------------------------------------
 eval:
   golden_set: "eval/golden_set.json"

@@ -19,6 +19,13 @@ RUN IT
     uv run python -m src.pipeline "Who is the CEO of Nimbus Robotics?"
     uv run python -m src.pipeline --verbose "How do I file an incident report?"
 
+    # Phase 5: run the verification loop on this one answer
+    uv run python -m src.pipeline --verify --verbose "What does the NB-2 cost?"
+
+    # Phase 6: the ablation modes, one query at a time
+    uv run python -m src.pipeline --mode=dense "What is error code E204?"
+    uv run python -m src.pipeline --mode=none  "What is error code E204?"
+
     The second one is question q091 from eval/golden_set.json, a labelled
     NEGATIVE: the corpus genuinely does not name a CEO. A correct system says
     "Not found in sources." An incorrect one invents a plausible name, which is
@@ -36,8 +43,12 @@ from dataclasses import dataclass, field
 
 from src.config import Config, load_config
 from src.context import NOT_FOUND, build_context, build_messages
+from src.embed import Embedder
 from src.generate import Generator, parse_citations
+from src.index_dense import search as dense_search
+from src.ingest import load_chunks
 from src.retrieve import RetrievedChunk, hybrid_retrieve
+from src.self_correct import self_correct
 
 # =============================================================================
 # GIVEN: result type
@@ -155,6 +166,53 @@ def should_abstain(retrieved: list[RetrievedChunk], min_score: float) -> bool:
 
 
 # =============================================================================
+# GIVEN: retrieval modes
+#
+# Phase 4 only ever needs "hybrid". The other two exist so that Phase 6 can run
+# an ABLATION — the same pipeline with one component removed — which is the only
+# way to attribute a result to a component rather than just describe a system.
+# =============================================================================
+
+RETRIEVAL_MODES = ("hybrid", "dense", "none")
+
+
+def _retrieve(cfg: Config, question: str, mode: str) -> list[RetrievedChunk]:
+    if mode == "hybrid":
+        return hybrid_retrieve(cfg, question)
+
+    chunks = {c.chunk_id: c for c in load_chunks(cfg.path("chunks"))}
+
+    if mode == "dense":
+        # Pipeline A in the ablation: no BM25, no fusion. The rrf_score field is
+        # reused to carry the cosine score so downstream code needs no changes.
+        hits = dense_search(cfg, question, cfg.retrieval.top_k)
+        return [
+            RetrievedChunk(chunk=chunks[cid], rrf_score=s, dense_rank=i,
+                           dense_score=s)
+            for i, (cid, s) in enumerate(hits, start=1)
+        ]
+
+    if mode == "none":
+        # Pipeline 0: NO RETRIEVAL AT ALL — hand the model the entire corpus.
+        #
+        # This is only possible because the corpus is ~2,900 tokens and fits in
+        # the context window. It is the honest upper bound: if your retrieval
+        # pipeline cannot beat "paste everything", then retrieval is subtracting
+        # value, not adding it. Most RAG write-ups omit this baseline, and the
+        # reason they omit it is not flattering.
+        #
+        # Note it will blow past generation.context_token_budget. That is the
+        # point of the baseline; build_context will trim to the budget, so raise
+        # the budget in config.yaml if you want a true no-retrieval run.
+        return [
+            RetrievedChunk(chunk=c, rrf_score=1.0)
+            for c in sorted(chunks.values(), key=lambda c: c.chunk_id)
+        ]
+
+    raise ValueError(f"unknown retrieval mode {mode!r}, expected one of {RETRIEVAL_MODES}")
+
+
+# =============================================================================
 # GIVEN: the pipeline
 # =============================================================================
 
@@ -164,21 +222,27 @@ def query(
     question: str,
     *,
     generator: Generator | None = None,
+    embedder: Embedder | None = None,
     verbose: bool = False,
+    mode: str = "hybrid",
+    verify: bool | None = None,
 ) -> QueryResult:
     """Run one question end to end.
 
-    `generator` is injectable so Phase 6 can reuse one warm client across 100
-    questions instead of reconnecting (and re-paying warmup) each time.
+    `generator` and `embedder` are injectable so Phase 6 can reuse warm clients
+    across 100 questions instead of reconnecting (and re-paying warmup) each
+    time. `mode` selects the retrieval ablation; `verify` overrides
+    cfg.verification.enabled for a single call.
     """
     timings: dict[str, float] = {}
     owns_generator = generator is None
     gen = generator or Generator(cfg)
+    do_verify = cfg.verification.enabled if verify is None else verify
 
     try:
         # --- retrieve ------------------------------------------------------
         t0 = time.perf_counter()
-        retrieved = hybrid_retrieve(cfg, question)
+        retrieved = _retrieve(cfg, question, mode)
         timings["retrieve"] = time.perf_counter() - t0
 
         if verbose:
@@ -214,24 +278,48 @@ def query(
         t0 = time.perf_counter()
         out = gen.complete(build_messages(question, context))
         timings["generate"] = time.perf_counter() - t0
+        answer = out.text
+
+        # --- verify (Phase 5) ----------------------------------------------
+        iterations: int | None = None
+        faithfulness: float | None = None
+        if do_verify:
+            t0 = time.perf_counter()
+            emb = embedder or Embedder(cfg)
+            try:
+                vr = self_correct(cfg, question, context, answer, used, gen, emb)
+            finally:
+                if embedder is None:
+                    emb.close()
+            timings["verify"] = time.perf_counter() - t0
+            answer, iterations, faithfulness = vr.answer, vr.iterations, vr.faithfulness
+            if verbose and vr.unsupported:
+                print(f"\n{len(vr.unsupported)} sentence(s) still unsupported "
+                      f"after {vr.iterations} rewrite(s):")
+                for v in vr.unsupported:
+                    print(f"  sim={v.best_sim:.3f} jac={v.best_jaccard:.3f}  "
+                          f"{v.sentence[:80]}")
 
         # --- parse citations -----------------------------------------------
         # NB: map against `used`, not `retrieved`. [S1] refers to the first
         # chunk that made it into the context, which is not necessarily the
-        # first chunk retrieved.
-        cited, invalid = parse_citations(out.text, used)
+        # first chunk retrieved. Parse AFTER verification, since a rewrite
+        # renumbers nothing but can drop citations along with their sentences.
+        cited, invalid = parse_citations(answer, used)
 
         timings["total"] = sum(timings.values())
         return QueryResult(
             question=question,
-            answer=out.text,
+            answer=answer,
             citations=cited,
             invalid_citations=invalid,
             sources=used,
-            abstained=out.text.strip() == NOT_FOUND,
+            abstained=answer.strip() == NOT_FOUND,
             timings=timings,
             prompt_tokens=out.prompt_tokens,
             completion_tokens=out.completion_tokens,
+            iterations=iterations,
+            faithfulness=faithfulness,
         )
     finally:
         if owns_generator:
@@ -275,7 +363,8 @@ def _print_result(res: QueryResult) -> None:
         print(f"tokens:  {res.prompt_tokens} in / {res.completion_tokens} out")
 
     if res.faithfulness is None:
-        print("faithfulness: n/a (Phase 5 not implemented yet)")
+        print("faithfulness: not measured — pass --verify (or set "
+              "verification.enabled in config.yaml) to run the Phase 5 loop")
     else:
         print(f"faithfulness: {res.faithfulness:.2f} "
               f"({res.iterations} verification iteration(s))")
@@ -286,7 +375,8 @@ def main() -> int:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if not args:
         print(__doc__)
-        print('usage: python -m src.pipeline "your question" [--verbose]')
+        print('usage: python -m src.pipeline "your question"'
+              ' [--verbose] [--verify] [--mode=hybrid|dense|none]')
         return 1
 
     try:
@@ -296,7 +386,18 @@ def main() -> int:
             w = gen.warmup()
             if w > 0.5:
                 print(f"(warmed up the model in {w:.1f}s — excluded from timings)")
-            res = query(cfg, args[0], generator=gen, verbose="--verbose" in sys.argv)
+            mode = "hybrid"
+            for m in RETRIEVAL_MODES:
+                if f"--mode={m}" in sys.argv:
+                    mode = m
+            res = query(
+                cfg,
+                args[0],
+                generator=gen,
+                verbose="--verbose" in sys.argv,
+                mode=mode,
+                verify=True if "--verify" in sys.argv else None,
+            )
         finally:
             gen.close()
         _print_result(res)

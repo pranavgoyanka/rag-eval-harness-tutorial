@@ -27,10 +27,13 @@ defend every design decision in it.
 | 2 | Dual indexing (dense + sparse) | ✅ scaffolded | 6 |
 | 3 | Hybrid retrieval + RRF | ✅ scaffolded | 2 |
 | 4 | Context + generation | ✅ scaffolded | 3 |
-| 5 | Self-correction loop | 📋 designed below | — |
-| 6 | Evaluation & ablation | 📋 designed below | — |
-| 7 | API + UI | 📋 designed below | — |
-| 8 | Packaging | 📋 designed below | — |
+| 5 | Self-correction loop | ✅ scaffolded | 5 |
+| 6 | Evaluation & ablation | ✅ scaffolded | 4 |
+| 7 | API + UI | ✅ written | — |
+| 8 | Packaging | ✅ template | — |
+
+**23 stubs total.** Phase 7 has none on purpose (see below), and Phase 8 is a
+README with marked blanks for your own results.
 
 ---
 
@@ -211,113 +214,190 @@ uv run python -m src.pipeline --verbose "How do I file an incident report?"
 corpus genuinely never names a CEO); per-stage latency printed.
 
 ---
-
-# Phases 5–8 — designed, not yet built
-
-No code exists for these. This is the design so you know where it's going.
-
 ## Phase 5 — Self-correction loop
 
-**New file:** `src/self_correct.py`. Wires into the `iterations` and
-`faithfulness` fields already declared on `QueryResult`.
+**Files:** `src/self_correct.py`, `scripts/calibrate.py`
+**Stubs:** `split_sentences` · `jaccard` · `verify_sentence` · `self_correct` ·
+`suggest_thresholds`
 
-The idea: after generating a draft, check each sentence against the retrieved
-chunks and rewrite or drop the unsupported ones.
+Phase 4 *asked* the model to stay grounded. Models don't reliably obey.
+Prompting is a request; verification is a check. You need both.
 
-1. Split the answer into sentences.
-2. For each sentence, compute against every retrieved chunk:
-   - **cosine similarity** of their embeddings, and
-   - **Jaccard token overlap** — `|A ∩ B| / |A ∪ B|` over `tokenize()`'d terms.
-3. A sentence is **supported** if `cosine ≥ SIM_T` **OR** `jaccard ≥ JAC_T`.
-   The OR matters: cosine catches paraphrase, Jaccard catches the case cosine is
-   worst at — numbers and identifiers copied verbatim ("`$18,500`", "`E204`"),
-   which is most of this corpus.
-4. Unsupported sentences → one rewrite pass with the offending sentence named,
-   capped at `max_iterations` so the loop always terminates.
-5. `faithfulness = supported_sentences / total_sentences`.
+**The mechanism.** Split the draft into sentences. For each, compute against
+every retrieved chunk both a **cosine similarity** and a **Jaccard token
+overlap**. A sentence is supported if **either** passes. The OR is the design:
 
-**Why deterministic checks instead of an NLI model or an LLM judge?** It is
-fast, free, reproducible, and debuggable. It is also *weaker* — it cannot catch
-a sentence that copies the right words while inverting the meaning. Name that
-limitation in your README rather than overselling the metric.
+- Cosine alone fails on this corpus's bread and butter — "costs $18,500" and
+  "costs $19,500" sit at ~0.99 cosine, and the embedding barely notices the
+  digit that makes one of them false.
+- Jaccard alone fails on any genuine paraphrase.
 
-**Calibration, not guessing.** `scripts/calibrate.py` runs ~10 known-good
-answers and prints the (cosine, jaccard) distribution per sentence. Choose
-thresholds from where the supported and unsupported populations separate. Two
-thresholds picked by vibes will quietly decide every faithfulness number you
-report.
+Unsupported sentences trigger one targeted rewrite, capped by `max_iterations`.
+`faithfulness = supported / total`.
 
-**Adversarial check:** inject a false claim into a draft and confirm the loop
-rewrites or drops it.
+**Concepts.**
+
+- **Sentence splitting is not `text.split(".")`.** This corpus is full of
+  `99.2%`, `$18,500`, `12,000 hours`. Naive splitting shatters them, the
+  fragments fail verification, and your loop starts rewriting correct answers to
+  fix a bug in your tokenizer.
+- **Jaccard's denominator is the union**, so a 5-token sentence checked against
+  a 60-token chunk tops out around 0.08 even when perfectly grounded. Read the
+  note in `jaccard`'s docstring — *containment* (`|A∩B|/|A|`) is probably the
+  metric you actually want, and if you switch, rename the function.
+- **The cap is not optional.** Golden question q083 computes 12,400 × 0.88 =
+  10,912; "10,912" appears nowhere in the corpus, so a *correct* answer is
+  permanently unverifiable. Without a cap you've built a machine that burns GPU
+  forever on a right answer.
+- **Faithfulness is gameable alone.** A refusal asserts nothing, so it scores
+  1.0. A system that refuses everything is perfectly faithful. This is exactly
+  why Phase 6 reports it next to key-fact recall and false-refusal rate.
+
+**Calibrate, don't guess.** `scripts/calibrate.py` builds two labelled score
+populations without any hand-labelling: golden answers checked against *their
+own* retrieved chunks (positives) versus the *same* answers checked against a
+**different question's** chunks (negatives). That mismatched-pairing trick
+yields hard negatives — fluent, on-topic corpus text that simply isn't supported
+by that context. It then sweeps thresholds and reports sensitivity/specificity.
+
+```bash
+uv run python -m src.self_correct --self-check   # offline
+uv run python scripts/calibrate.py --n 20        # measure your thresholds
+uv run python -m src.pipeline --verify --verbose "What does the NB-2 cost?"
+```
+
+**DoD:** self-check green; thresholds chosen from the calibration output and
+written into `config.yaml`; the loop provably terminates. Then the adversarial
+test: paste a false claim into a draft and confirm it gets rewritten or dropped.
+
+**If the distributions overlap heavily,** no threshold separates them and the
+honest move is to say so — not to pick the least-bad number and present it as
+calibrated. A metric built on a non-separating score is worse than no metric,
+because it looks like evidence.
+
+---
 
 ## Phase 6 — Evaluation & ablation
 
-**New file:** `scripts/run_eval.py`. Output: `metrics.json` + a printed table.
+**File:** `scripts/run_eval.py`
+**Stubs:** `key_fact_recall` · `context_precision_recall` · `mrr` · `percentile`
 
-**Use `eval/golden_set.json` as-is — do not author a new test set.** It already
-has 100 labelled questions (factual 45, procedural 15, multi_hop 12,
-comparison 10, negative 10, numeric 8; easy 55 / medium 29 / hard 16).
+Everything before this was construction. "I built a hybrid RAG pipeline" is a
+description. A *result* looks like: "hybrid raised context recall@8 from 0.71 to
+0.89, driven entirely by the identifier questions; verification raised
+faithfulness from 0.82 to 0.94 at the cost of 3 false refusals and 1.9s of p50."
+This file is the difference between those two sentences.
 
-**Its `expected_sources` are labelled at DOCUMENT level**, not chunk level. So
-compute context precision/recall over source documents. This deletes the
-chunk-id labelling work you might otherwise have budgeted for — and it is the
-more robust unit anyway, since re-chunking would invalidate chunk-level labels.
-
-**Four pipelines**, not three:
+**The four pipelines.**
 
 | | Pipeline | Why it's in the table |
 |---|---|---|
-| **0** | No retrieval — stuff the entire corpus | The corpus is only ~2,900 tokens, so it *fits in context*. This is the honest upper bound. If RAG doesn't beat it, your retrieval is subtracting value. Most write-ups omit this baseline because it's unflattering. |
+| **0** | No retrieval — entire corpus in the prompt | The corpus is ~2,900 tokens, so it *fits*. The honest upper bound. If B can't beat it, retrieval is subtracting value at this scale — and that's a real finding, not a failure. Most write-ups omit this baseline; the reason is not flattering. |
 | **A** | Dense only | |
-| **B** | Hybrid (dense + BM25 + RRF) | Expect B > A on recall, driven by the identifier questions |
-| **C** | Hybrid + Phase 5 verification | Expect C ≥ B on faithfulness, possibly worse on answer recall (verification drops true-but-unverifiable sentences) |
+| **B** | Hybrid (dense + BM25 + RRF) | `A → B` isolates what BM25 + fusion bought you |
+| **C** | Hybrid + Phase 5 verification | `B → C` isolates the verification loop |
 
-**Metrics**
+**Use `eval/golden_set.json` as-is.** 100 questions already labelled. Its
+`expected_sources` are **document**-level, so all retrieval metrics are computed
+over documents — which is the more robust unit anyway, since re-chunking would
+invalidate chunk-level labels and you *will* re-chunk.
 
-- **Key-fact recall** — fraction of `key_facts` present in the answer
-  (whitespace-insensitive substring). Cheap and surprisingly effective.
-- **Context precision@k** — of the k retrieved chunks, what fraction come from
-  `expected_sources`.
-- **Context recall@k** — of the `expected_sources`, what fraction appear in the
-  retrieved set. *This is the ceiling on everything downstream:* a fact not
-  retrieved cannot be generated.
-- **MRR** — mean of `1/rank_of_first_relevant_chunk`. Precision@k treats rank 1
-  and rank 8 alike; MRR does not.
-- **Rejection rate** — on the 10 negatives, did it emit `NOT_FOUND`? Report the
-  false-refusal rate on the other 90 alongside it, or the metric is gameable by
-  refusing everything.
-- **Faithfulness** — from Phase 5.
-- **p50 / p95 latency** — report both. The mean hides the tail, and the tail is
-  what users feel. Warm up first, and run **serially** (`--parallel 1` on the
-  backend means concurrency buys nothing but noise).
+**Metric concepts.**
 
-**Two caveats to record in the README.** `api-reference.md` backs only **1** of
-the 100 questions, so per-document recall on it is statistically meaningless —
-don't read anything into that row. And with n=100 (n=10 for negatives), a
-few-point difference between pipelines is noise; report the differences that
-survive that.
+- **Context recall@k is the ceiling on the whole system.** A fact never
+  retrieved cannot be generated, cited, or verified. When end-to-end accuracy is
+  bad, check recall *first* — usually the generator is being blamed for the
+  retriever's miss.
+- **Precision@k is bounded by `|expected|/k`.** A question with 3 expected
+  sources cannot exceed 3/8 even with perfect retrieval. Don't read a low number
+  as failure without checking that ceiling.
+- **Dedupe before measuring precision.** You retrieve 8 *chunks* but score
+  *documents*, and 8 chunks often come from 3–4 docs. Divide by 8 and you report
+  roughly half the truth.
+- **MRR exists because precision@k is rank-blind.** `[RIGHT,·,·,·,·,·,·,·]` and
+  `[·,·,·,·,·,·,·,RIGHT]` both score 1/8; MRR scores them 1.0 and 0.125. But MRR
+  only sees the *first* hit, so it and recall answer different questions —
+  report both or mislead.
+- **p50 and p95, never the mean.** The mean hides the tail and the tail is what
+  users feel. "p95" is genuinely ambiguous at small n; the stub specifies
+  nearest-rank so every number is an actually-observed value. Say which method
+  you used — an unlabelled percentile is unreproducible.
+- **Rejection rate is gameable alone**, so it's always reported beside
+  false-refusal rate.
 
-**Sanity check before you write it up:** B > A on recall/precision, C ≥ B on
-faithfulness. If not, debug retrieval and thresholds *before* concluding the
-thesis is wrong.
+```bash
+uv run python scripts/run_eval.py --n 20            # stratified sample
+uv run python scripts/run_eval.py --all             # all 100, slow
+uv run python scripts/run_eval.py --n 10 --pipelines B,C
+```
+
+Sampling is **stratified** and always keeps ≥5 negatives — a uniform sample of
+20 would pull ~2, far too few to say anything about rejection. Runs are
+**serial**: the backend uses `--parallel 1`, so concurrency adds queueing noise
+to latency and nothing else. Budget roughly 8s/answer × questions × pipelines.
+
+**DoD:** a four-column table with real numbers; `metrics.json` written; the
+thesis checked (B > A on recall/precision, C ≥ B on faithfulness). If it
+doesn't hold, debug retrieval and thresholds *before* concluding the thesis is
+wrong.
+
+**Two caveats to record.** `api-reference.md` backs only **1** of the 100
+questions, so per-document conclusions about it are a sample of one. And with
+n=100 (n=10 negatives), a 2–3 point gap is noise — report only what survives
+that. The most informative thing in `metrics.json` is the per-question rows
+where B *lost* to A.
+
+---
 
 ## Phase 7 — API + UI
 
-**New files:** `src/api.py`, `static/index.html`. Add `uv add fastapi uvicorn`
-(already declared as the `api` optional-dependency group in `pyproject.toml`).
+**Files:** `src/api.py`, `static/index.html` · **No stubs, deliberately.**
 
-`POST /query` → `QueryResult` as JSON; `GET /health`; static mount.
-The UI shows the answer, citation chips, faithfulness, and the latency
-breakdown. Hold one warm `Generator` for the process lifetime — reconnecting
-per request re-pays warmup.
+Every other phase leaves the interesting function blank. This one doesn't,
+because there's no new RAG concept here — it's a web server in front of code you
+already wrote. Making you retype FastAPI boilerplate would teach you FastAPI.
+
+Two decisions in the file are worth reading:
+
+- **Warm clients live for the process lifetime**, opened in the lifespan
+  handler. Construct a `Generator` per request and the first request after any
+  idle period pays model-load time — and your "why is it sometimes slow?"
+  investigation ends there.
+- **The response includes every retrieved chunk, not just cited ones**, because
+  this is a debugging tool: seeing what was retrieved and *not* cited is how you
+  diagnose a bad answer. A user-facing product would return citations only —
+  and if you ever point this at a corpus with access controls, note that it
+  hands the caller raw text for anything the retriever surfaced. Real systems
+  filter by permission *before* retrieval, not after.
+
+```bash
+uv run uvicorn src.api:app --port 8000
+```
+
+The UI shows the answer, per-stage latency, faithfulness, and every chunk with
+its dense rank, BM25 rank and RRF score — the same view as the Phase 3 CLI.
+
+**DoD:** a browser query returns all fields; the second query is faster (warm).
+
+---
 
 ## Phase 8 — Packaging
 
-Rewrite `README.md`: problem statement, architecture diagram, the **BM25 rescue
-example from Phase 3**, the ablation table from Phase 6, quickstart, and 3–4
-design-tradeoff bullets (FlatIP vs HNSW; deterministic verification vs NLI;
-document-level vs chunk-level eval labels; why the no-RAG baseline is in the
-table). Fresh-clone test. Demo GIF with one unanswerable question.
+`README.md` is written with two clearly marked `TODO` blocks. You fill them:
+
+1. **"Why hybrid: the evidence"** — paste the retrieval comparison for your
+   Phase 3 BM25-rescue query.
+2. **"Results"** — paste the ablation table. `run_eval.py` prints a
+   ready-to-paste Markdown version.
+
+Then write 3–5 sentences of **interpretation** under the table. The table is
+data; the interpretation is the part that shows judgement. Say what surprised
+you, and name the differences small enough to be noise. A table without
+interpretation reads as a dump; a table whose author tells you which rows not to
+trust reads as competence.
+
+Remaining: a LICENSE, a fresh-clone quickstart test, and a demo GIF (record 2–3
+queries including one unanswerable).
 
 ---
 
