@@ -45,12 +45,15 @@ DEPENDS ON: Phase 1 output only. NO SERVER NEEDED — you can do this offline.
 from __future__ import annotations
 
 import pickle
+import re
 import sys
 
 from rank_bm25 import BM25Okapi
 
 from src.config import Config, load_config
 from src.ingest import load_chunks
+
+from pprint import pprint
 
 # =============================================================================
 # TODO(Phase 2) #5 — tokenize
@@ -128,7 +131,11 @@ def tokenize(text: str) -> list[str]:
     Returns: list[str] of terms.
     """
     # TODO(Phase 2): implement per the recipe above.
-    raise NotImplementedError("Phase 2: tokenize")
+    
+    text = text.lower()
+    # Commas are deliberately separators: preserving them would glue ordinary
+    # prose such as "1,2" into one term.
+    return re.findall(r"[a-z0-9]+(?:[-_./%][a-z0-9]+)*", text)
 
 
 # =============================================================================
@@ -200,7 +207,19 @@ def search_bm25(bm25: BM25Okapi, chunk_ids: list[str], query: str, k: int
       than by score.
     """
     # TODO(Phase 2): implement per the recipe above.
-    raise NotImplementedError("Phase 2: search_bm25")
+    
+    tokens = tokenize(query)
+    scores = bm25.get_scores(tokens)
+    
+    # print(scores, chunk_ids)
+    
+    chunkToScore = list( (chunk_id, float(score)) for chunk_id, score in zip(chunk_ids, scores))
+    
+    chunkToScore.sort(key=lambda x: x[1], reverse=True)
+
+    # pprint(chunkToScore)
+    return chunkToScore
+    # raise NotImplementedError("Phase 2: search_bm25")
 
 
 # =============================================================================
