@@ -102,7 +102,22 @@ def numpy_search(qvec: np.ndarray, matrix: np.ndarray, k: int) -> list[tuple[int
     complexity. See build_faiss().
     """
     # TODO(Phase 2): implement per the recipe above.
-    raise NotImplementedError("Phase 2: numpy_search")
+    
+    scores = matrix @ qvec
+
+    # print(scores)
+    # top k values
+    top_k = np.argsort(-scores)[:k]
+    
+    # print(f'top_k = {top_k}')
+    
+    top_scores = scores[:k]
+    
+    res = [(int(k), float(scores[k])) for k in top_k]
+    
+    return res
+    
+    # raise NotImplementedError("Phase 2: numpy_search")
 
 
 # =============================================================================
@@ -162,7 +177,16 @@ def build_faiss(matrix: np.ndarray):  # -> faiss.Index
       classic first FAISS bug.
     """
     # TODO(Phase 2): implement per the recipe above.
-    raise NotImplementedError("Phase 2: build_faiss")
+    
+    if (not HAVE_FAISS):
+        raise RuntimeError("FAISS is not available.")
+    
+    dim = matrix.shape[1]
+    index = faiss.IndexFlatIP(dim)
+    index.add(matrix)
+    return index # this is the dense index
+    
+    # raise NotImplementedError("Phase 2: build_faiss")
 
 
 # =============================================================================
@@ -192,6 +216,27 @@ def faiss_search(index, qvec: np.ndarray, k: int) -> list[tuple[int, float]]:
          (FAISS returns them sorted).
     """
     # TODO(Phase 2): implement per the recipe above.
+    
+    # reshape
+    q = np.ascontiguousarray(qvec.reshape(1, -1), dtype=np.float32  )
+    
+    scores, idxs = index.search(q, k)
+    
+    # print(scores, idxs)
+    # print(scores[0].shape, idxs[0].shape)
+    scores = scores[0]
+    idxs = idxs[0]
+    # print(list(zip(idxs, scores)))
+    # if < k elements in the list, then the empty slots would be filled with -1
+    
+    
+    
+    # res = [int(idx), float(score) for idx, score in list(zip(idxs, scores)) ]
+    res = [(int(idx), float(score)) for idx, score in zip(idxs, scores) if idx != -1 and score != -1]
+
+    # return list(zip(int(idxs), float(scores)))
+    # return list(zip(idxs, scores))
+    return res
     raise NotImplementedError("Phase 2: faiss_search")
 
 
