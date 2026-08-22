@@ -61,6 +61,8 @@ from src.index_dense import search as dense_search
 from src.index_sparse import search as sparse_search
 from src.ingest import Chunk, load_chunks
 
+from pprint import pprint
+
 # =============================================================================
 # GIVEN: result type
 # =============================================================================
@@ -160,7 +162,23 @@ def fuse_rrf(rankings: list[list[str]], k: int = 60) -> list[tuple[str, float]]:
     Returns: [(doc_id, rrf_score), ...] sorted by score descending.
     """
     # TODO(Phase 3): implement per the recipe above.
-    raise NotImplementedError("Phase 3: fuse_rrf")
+
+    # pprint(rankings)
+
+    scores: dict[str, float] = {}
+
+    for ranking in rankings:
+        for rank, doc_id in enumerate(ranking, start=1):
+            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (
+                k + rank
+            )  # so if the score is not there to begin w default to zero
+
+    return sorted(
+        scores.items(), key=lambda x: -x[1]
+    )  # descending sort on the score for each doc
+
+
+#     raise NotImplementedError("Phase 3: fuse_rrf")
 
 
 # =============================================================================
@@ -213,7 +231,60 @@ def hybrid_retrieve(
     wrong thing.
     """
     # TODO(Phase 3): implement per the recipe above.
-    raise NotImplementedError("Phase 3: hybrid_retrieve")
+
+    if k == None:
+        k = cfg.retrieval.top_k
+
+    if overfetch == None:
+        overfetch = cfg.retrieval.overfetch
+
+    n = k * overfetch
+
+    # now actually call both dense and sparse, to get the ranks
+    # then pass a list of lists containing both to rrf
+
+    dense = dense_search(cfg, query, n)  # already sorted by scores
+    sparse = sparse_search(cfg, query, n)
+
+    # pprint(dense)
+
+    dense_rank = {cid: i for i, (cid, _) in enumerate(dense, start=1)}
+    dense_score = dict(dense)
+    # pprint(dense_score)
+
+    sparse_rank = {cid: i for i, (cid, _) in enumerate(sparse, start=1)}
+    sparse_score = dict(sparse)
+    # print(type(sparse_rank))
+
+    rankings = [[cid for cid, _ in dense], [cid for cid, _ in sparse]]
+    # pprint(rankings)
+
+    fused = fuse_rrf(rankings, k=cfg.retrieval.rrf_k)
+
+    chunks = {c.chunk_id: c for c in load_chunks(cfg.path("chunks"))}
+
+    # pprint(rrf)
+    # pprint(chunks)
+
+    retrievedChunks: list[RetrievedChunk] = []
+
+    for fuse in fused:
+        chunkName = fuse[0]
+        retrievedChunks.append(
+            RetrievedChunk(
+                chunk=chunks[chunkName],
+                rrf_score=fuse[1],
+                dense_rank=dense_rank.get(chunkName),
+                dense_score=dense_score.get(chunkName),
+                sparse_rank=sparse_rank.get(chunkName),
+                sparse_score=sparse_score.get(chunkName),
+            )
+        )
+
+    # pprint(retrievedChunks[:2])
+
+    return retrievedChunks
+    # raise NotImplementedError("Phase 3: hybrid_retrieve")
 
 
 # =============================================================================
@@ -268,16 +339,22 @@ def compare(cfg: Config, query: str, k: int = 5) -> None:
             r.sparse_rank is None or r.sparse_rank > k
         ):
             marks.append("<- dense rescue")
-        print(f"  {i}. {r.rrf_score:7.5f}  {_fmt_rank(r.dense_rank)} "
-              f"{_fmt_rank(r.sparse_rank):>6}  {label(r.chunk_id)} {' '.join(marks)}")
+        print(
+            f"  {i}. {r.rrf_score:7.5f}  {_fmt_rank(r.dense_rank)} "
+            f"{_fmt_rank(r.sparse_rank):>6}  {label(r.chunk_id)} {' '.join(marks)}"
+        )
 
     if rescues:
         print(f"\n  *** BM25 RESCUE on this query: {rescues}")
-        print("  A chunk BM25 ranked in its top 3 was outside dense's top "
-              f"{k}. This is your README evidence that hybrid beats dense-only.")
+        print(
+            "  A chunk BM25 ranked in its top 3 was outside dense's top "
+            f"{k}. This is your README evidence that hybrid beats dense-only."
+        )
     else:
-        print("\n  (no BM25 rescue on this query — try an exact identifier like "
-              "'E204', 'IP65', or '36-month')")
+        print(
+            "\n  (no BM25 rescue on this query — try an exact identifier like "
+            "'E204', 'IP65', or '36-month')"
+        )
 
 
 def main() -> int:
@@ -285,7 +362,7 @@ def main() -> int:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if not args:
         print(__doc__)
-        print("usage: python -m src.retrieve \"your query here\"")
+        print('usage: python -m src.retrieve "your query here"')
         return 1
 
     try:
