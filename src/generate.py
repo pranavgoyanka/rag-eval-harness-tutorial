@@ -103,6 +103,29 @@ def parse_citations(
     as an error condition — pipeline.py distinguishes the two cases.
     """
     # TODO(Phase 4): implement per the recipe above.
+
+    # print(answer)
+    cite = re.findall(CITATION_RE, answer)
+    # print(cite)
+
+    cite_int = []
+
+    for c in cite:
+        cite_int.append(int(c))
+
+    valid: list[str] = []
+    invalid: list[int] = []
+
+    for c in cite_int:
+        if c <= 0 or c > len(sources):
+            invalid.append(c)
+        else:
+            valid.append(sources[c - 1].chunk_id)
+
+    valid = list((dict.fromkeys(valid)).keys())
+    invalid = list((dict.fromkeys(invalid)).keys())
+
+    return valid, invalid
     raise NotImplementedError("Phase 4: parse_citations")
 
 
