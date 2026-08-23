@@ -160,7 +160,7 @@ class Generator:
         if not self.cfg.generation.enable_thinking:
             # llama.cpp passes this through to the chat template. See module
             # docstring — without it qwen3.8 reasons before every answer.
-            body["chat_template_kwargs"] = {"enable_thinking": False}
+            body["chat_template_kwargs"] = {"enable_thinking": True}
         body.update(overrides)
         return body
 

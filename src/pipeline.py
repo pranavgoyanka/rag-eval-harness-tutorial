@@ -162,7 +162,12 @@ def should_abstain(retrieved: list[RetrievedChunk], min_score: float) -> bool:
     threshold nobody can justify.
     """
     # TODO(Phase 4): implement per the recipe above.
-    raise NotImplementedError("Phase 4: should_abstain")
+    if len(retrieved) == 0:
+        return True
+
+    if retrieved[0].rrf_score < min_score:
+        return True
+    # raise NotImplementedError("Phase 4: should_abstain")
 
 
 # =============================================================================
