@@ -165,7 +165,35 @@ def build_context(
     with what you measured.
     """
     # TODO(Phase 4): implement per the recipe above.
-    raise NotImplementedError("Phase 4: build_context")
+
+    # get chunks and loop over them and keep counting tokens
+
+    chunksToInclude: list[RetrievedChunk] = []
+    contextList: list[str] = []
+    tokens = 0
+
+    for chunk in chunks:
+        t = count_tokens(chunk.chunk.body)
+        if t + tokens <= token_budget:
+            if not chunksToInclude:
+                pass
+            else:
+                continue
+
+        n = len(chunksToInclude) + 1
+        tokens += t
+        chunksToInclude.append(chunk)
+        contextList.append(
+            f"[S{n}] {chunk.chunk.doc} - {chunk.chunk.heading_path} \n {chunk.chunk.body}"
+        )
+
+        # skipping anything the moment the budget is exceeded. Maybe there is a smaller chunk
+        # in the future that might have worked out within the token_budget
+        # but ignoring that for now
+
+    context_string = "\n".join(contextList)
+
+    return context_string, chunksToInclude
 
 
 # =============================================================================
